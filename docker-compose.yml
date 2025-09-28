@@ -1,0 +1,80 @@
+version: "3.8"
+
+services:
+  postgres-primary:
+    image: postgres:15-alpine
+    container_name: postgres-primary
+    environment:
+      POSTGRES_DB: mydb
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_REPLICATION_MODE: master
+      POSTGRES_REPLICATION_USER: replicator
+      POSTGRES_REPLICATION_PASSWORD: replicator123
+    ports:
+      - "6000:5432"
+    volumes:
+      - ./primary_data:/var/lib/postgresql/data
+      - ./primary/postgresql.conf:/etc/postgresql/postgresql.conf
+      - ./primary/pg_hba.conf:/etc/postgresql/pg_hba.conf
+      - ./init-primary.sh:/docker-entrypoint-initdb.d/init-primary.sh
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    networks:
+      app-net: {}
+
+  postgres-standby:
+    image: postgres:15-alpine
+    container_name: postgres-standby
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_MASTER_HOST: postgres-primary
+      POSTGRES_MASTER_PORT: 5432
+      POSTGRES_REPLICATION_USER: replicator
+      POSTGRES_REPLICATION_PASSWORD: replicator123
+    ports:
+      - "6001:5432"
+    volumes:
+      - ./standby_data:/var/lib/postgresql/data
+      - ./standby/postgresql.conf:/etc/postgresql/postgresql.conf
+      - ./standby/pg_hba.conf:/etc/postgresql/pg_hba.conf
+      - ./init-standby.sh:/docker-entrypoint-initdb.d/init-standby.sh
+    depends_on:
+      - postgres-primary
+    command: |
+      bash -c "
+      until pg_isready -h postgres-primary -p 5432 -U admin; do
+        echo 'Waiting for primary to be ready...'
+        sleep 2
+      done
+
+      if [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then
+        echo 'Starting base backup from primary...'
+        rm -rf /var/lib/postgresql/data/*
+        PGPASSWORD=replicator123 pg_basebackup -h postgres-primary -p 5432 -U replicator -D /var/lib/postgresql/data -Fp -Xs -R -P -v
+
+        cat >> /var/lib/postgresql/data/postgresql.auto.conf <<EOF
+      primary_conninfo = 'host=postgres-primary port=5432 user=replicator password=replicator123'
+      primary_slot_name = 'replication_slot'
+      EOF
+
+        touch /var/lib/postgresql/data/standby.signal
+        chmod 700 /var/lib/postgresql/data
+        chown -R postgres:postgres /var/lib/postgresql/data
+      fi
+
+      chown postgres:postgres /var/lib/postgresql/data
+      chmod 700 /var/lib/postgresql/data
+      exec su-exec postgres postgres -c config_file=/etc/postgresql/postgresql.conf
+      "
+    networks:
+      app-net: {}
+
+volumes:
+  primary_data:
+  standby_data:
+
+networks:
+  app-net:
+    external: true
+    name: "pg-cluster-net"

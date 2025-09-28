@@ -27,7 +27,6 @@ PostgreSQL streaming replication creates a real-time copy of your database by co
 Create the following directory structure:
 
 ```
-postgres-replication/
 ├── docker-compose.yml
 ├── primary/
 │   ├── Dockerfile
